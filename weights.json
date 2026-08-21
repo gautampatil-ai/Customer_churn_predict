@@ -1,0 +1,17 @@
+import h5py
+import json
+
+weights_dict = {}
+
+with h5py.File("model.weights.h5", "r") as f:
+    def extract_weights(name, obj):
+        if isinstance(obj, h5py.Dataset):
+            # Convert NumPy float arrays to lists for JSON serialization
+            weights_dict[name] = obj[()].tolist()
+
+    f.visititems(extract_weights)
+
+with open("weights.json", "w") as f:
+    json.dump(weights_dict, f)
+
+print("Successfully converted model.weights.h5 -> weights.json")
