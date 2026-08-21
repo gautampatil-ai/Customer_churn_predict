@@ -1,64 +1,14 @@
-import streamlit as st
+import os
 import numpy as np
-import pandas as pd
+from flask import Flask, request, jsonify, render_template_string
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import InputLayer, Dense
-import plotly.graph_objects as go
 
-# -----------------------------------------------------------------------------
-# PAGE CONFIGURATION
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Neural Network Inference Engine",
-    page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+app = Flask(__name__)
 
-# Custom Styling for modern Data Science Dashboard look
-st.markdown("""
-    <style>
-    .main {
-        background-color: #0e1117;
-    }
-    .stMetric {
-        background-color: #1e222d;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #2e364f;
-    }
-    .css-1r650q0 {
-        padding-top: 2rem;
-    }
-    .stButton>button {
-        width: 100%;
-        background-color: #4CAF50;
-        color: white;
-        font-weight: bold;
-        border-radius: 8px;
-        height: 3em;
-        border: none;
-    }
-    .stButton>button:hover {
-        background-color: #45a049;
-        color: white;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-# MODEL RECONSTRUCTION & LOADING
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def load_trained_model():
-    """
-    Reconstructs the Sequential Keras architecture from config.json specs:
-    - Input: 10 Features
-    - Hidden Layer 1: 8 Units (ReLU)
-    - Hidden Layer 2: 7 Units (ReLU)
-    - Output Layer: 1 Unit (Sigmoid)
-    """
+# Reconstruct Model Architecture matching config.json (10 Inputs -> 8 -> 7 -> 1)
+def load_model():
     model = Sequential([
         InputLayer(shape=(10,), name="input_layer"),
         Dense(8, activation="relu", name="dense"),
@@ -66,124 +16,104 @@ def load_trained_model():
         Dense(1, activation="sigmoid", name="dense_2")
     ])
     
-    # Load binary weights file extracted from your saved architecture
-    try:
-        model.load_weights("model.weights.h5")
-    except Exception:
-        # Fallback build compilation if running demo without local weight file
-        model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    
+    weights_path = os.path.join(os.path.dirname(__file__), "model.weights.h5")
+    if os.path.exists(weights_path):
+        model.load_weights(weights_path)
     return model
 
-model = load_trained_model()
+model = load_model()
 
-# -----------------------------------------------------------------------------
-# SIDEBAR - INPUT CONTROL PANEL
-# -----------------------------------------------------------------------------
-st.sidebar.image("https://img.icons8.com/m_brain/512/FFFFFF/brain.png", width=80)
-st.sidebar.title("Feature Controls")
-st.sidebar.markdown("Adjust the 10 input feature vectors below to run model inference.")
+# Frontend HTML template with modern dark-mode styling
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neural Network Inference Dashboard</title>
+    <style>
+        body { background-color: #0e1117; color: #ffffff; font-family: -apple-system, sans-serif; padding: 2rem; }
+        .container { max-width: 900px; margin: 0 auto; background: #1e222d; padding: 2rem; border-radius: 12px; border: 1px solid #2e364f; }
+        h1 { color: #4CAF50; margin-top: 0; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .input-group { display: flex; flex-direction: column; }
+        label { font-size: 0.85rem; color: #a0a0a0; margin-bottom: 0.3rem; }
+        input { background: #0e1117; border: 1px solid #2e364f; color: white; padding: 0.5rem; border-radius: 6px; }
+        button { width: 100%; background: #4CAF50; color: white; border: none; padding: 0.8rem; font-size: 1rem; font-weight: bold; border-radius: 6px; cursor: pointer; }
+        button:hover { background: #45a049; }
+        .result-box { margin-top: 1.5rem; padding: 1rem; background: #0e1117; border-radius: 8px; display: none; }
+        .metric { font-size: 1.5rem; font-weight: bold; color: #4CAF50; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧠 Neural Network Inference Engine</h1>
+        <p>Enter values for the 10 input feature vectors:</p>
+        <form id="predictForm">
+            <div class="grid">
+                {% for i in range(1, 11) %}
+                <div class="input-group">
+                    <label>Feature X_{{ i }}</label>
+                    <input type="number" step="0.01" name="x{{ i }}" value="0.00" required>
+                </div>
+                {% endfor %}
+            </div>
+            <button type="submit">Run Prediction</button>
+        </form>
+        
+        <div id="result" class="result-box">
+            <h3>Prediction Results:</h3>
+            <p>Predicted Probability: <span id="prob" class="metric">--</span></p>
+            <p>Classification Outcome: <span id="class" class="metric">--</span></p>
+        </div>
+    </div>
 
-features = {}
-st.sidebar.subheader("Numeric Inputs")
-
-# Create 10 interactive feature sliders/inputs
-col_sb1, col_sb2 = st.sidebar.columns(2)
-for i in range(1, 11):
-    col = col_sb1 if i % 2 != 0 else col_sb2
-    features[f"Feature_{i}"] = col.number_input(
-        f"X_{i}", 
-        min_value=-5.0, 
-        max_value=5.0, 
-        value=0.0, 
-        step=0.1,
-        key=f"input_{i}"
-    )
-
-st.sidebar.markdown("---")
-threshold = st.sidebar.slider("Classification Threshold", 0.0, 1.0, 0.5, 0.05)
-
-# -----------------------------------------------------------------------------
-# MAIN DASHBOARD INTERFACE
-# -----------------------------------------------------------------------------
-st.title("🧠 Neural Network Inference Dashboard")
-st.caption("Deep Learning Binary Classification Model • Keras Architecture Deployment")
-
-# Layout into two main columns
-col_left, col_right = st.columns([1, 1])
-
-# Format inputs into model shape (1, 10)
-input_array = np.array([list(features.values())], dtype=np.float32)
-
-with col_left:
-    st.subheader("📊 Input Vector Summary")
-    
-    # Display Input Data Frame
-    df_inputs = pd.DataFrame(features, index=["Value"]).T
-    st.dataframe(df_inputs, use_container_width=True, height=380)
-
-with col_right:
-    st.subheader("⚡ Model Prediction & Output")
-    
-    # Predict button / Real-time execution
-    raw_prediction = float(model.predict(input_array, verbose=0)[0][0])
-    predicted_class = 1 if raw_prediction >= threshold else 0
-    confidence = raw_prediction if predicted_class == 1 else (1.0 - raw_prediction)
-
-    # Key Performance Metric Cards
-    m1, m2 = st.columns(2)
-    m1.metric(
-        label="Predicted Class", 
-        value=f"Class {predicted_class}",
-        delta="Positive" if predicted_class == 1 else "Negative",
-        delta_color="normal" if predicted_class == 1 else "inverse"
-    )
-    m2.metric(
-        label="Probability Score", 
-        value=f"{raw_prediction:.4f}",
-        delta=f"Threshold: {threshold}"
-    )
-
-    # Gauge Chart Visualization using Plotly
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=raw_prediction,
-        domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "Sigmoid Output Probability", 'font': {'size': 16, 'color': "white"}},
-        gauge={
-            'axis': {'range': [0, 1], 'tickwidth': 1, 'tickcolor': "white"},
-            'bar': {'color': "#4CAF50" if predicted_class == 1 else "#FF5252"},
-            'bgcolor': "#1e222d",
-            'borderwidth': 2,
-            'bordercolor': "#2e364f",
-            'steps': [
-                {'range': [0, threshold], 'color': '#2a1b24'},
-                {'range': [threshold, 1.0], 'color': '#1b2a20'}
-            ],
-            'threshold': {
-                'line': {'color': "yellow", 'width': 3},
-                'thickness': 0.75,
-                'value': threshold
+    <script>
+        document.getElementById('predictForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const features = [];
+            for (let i = 1; i <= 10; i++) {
+                features.push(parseFloat(formData.get(`x${i}`)));
             }
-        }
-    ))
-    fig.update_layout(
-        height=260, 
-        margin=dict(l=20, r=20, t=30, b=20),
-        paper_bgcolor='rgba(0,0,0,0)',
-        font={'color': "white"}
-    )
-    st.plotly_chart(fig, use_container_width=True)
 
-# -----------------------------------------------------------------------------
-# MODEL ARCHITECTURE DETAILS SECTION
-# -----------------------------------------------------------------------------
-with st.expander("🛠️ View Neural Network Layer Architecture"):
-    st.markdown("""
-    **Architecture Overview (Sequential):**
-    * **Input Layer:** 10 Features (`float32`)
-    * **Dense Layer 1:** 8 Units | Activation: `ReLU`
-    * **Dense Layer 2:** 7 Units | Activation: `ReLU`
-    * **Output Layer:** 1 Unit | Activation: `Sigmoid`
-    * **Optimizer:** Adam ($\eta = 0.001$) | **Loss Function:** Binary Crossentropy
-    """)
+            const response = await fetch('/api/predict', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ features: features })
+            });
+
+            const data = await response.json();
+            document.getElementById('result').style.display = 'block';
+            document.getElementById('prob').innerText = (data.probability * 100).toFixed(2) + '%';
+            document.getElementById('class').innerText = data.class === 1 ? 'Positive (1)' : 'Negative (0)';
+        });
+    </script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def home():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route("/api/predict", methods=["POST"])
+def predict():
+    try:
+        data = request.get_json()
+        features = np.array([data["features"]], dtype=np.float32)
+        
+        # Perform inference
+        prediction = float(model.predict(features, verbose=0)[0][0])
+        predicted_class = 1 if prediction >= 0.5 else 0
+        
+        return jsonify({
+            "status": "success",
+            "probability": prediction,
+            "class": predicted_class
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+if __name__ == "__main__":
+    app.run(debug=True)
