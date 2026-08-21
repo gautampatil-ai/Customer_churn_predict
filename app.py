@@ -1,54 +1,72 @@
 import os
+import json
 import numpy as np
 from flask import Flask, request, jsonify, render_template_string
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import InputLayer, Dense
 
 app = Flask(__name__)
 
-# Reconstruct Model Architecture matching config.json (10 Inputs -> 8 -> 7 -> 1)
-def load_model():
-    model = Sequential([
-        InputLayer(shape=(10,), name="input_layer"),
-        Dense(8, activation="relu", name="dense"),
-        Dense(7, activation="relu", name="dense_1"),
-        Dense(1, activation="sigmoid", name="dense_2")
-    ])
-    
-    weights_path = os.path.join(os.path.dirname(__file__), "model.weights.h5")
+# Load extracted model weights
+weights_path = os.path.join(os.path.dirname(__file__), "weights.json")
+
+def load_weights():
     if os.path.exists(weights_path):
-        model.load_weights(weights_path)
-    return model
+        with open(weights_path, "r") as f:
+            data = json.load(f)
+            return {k: np.array(v, dtype=np.float32) for k, v in data.items()}
+    return None
 
-model = load_model()
+WEIGHTS = load_weights()
 
-# Frontend HTML template with modern dark-mode styling
+def relu(x):
+    return np.maximum(0, x)
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+def predict_forward(inputs):
+    """
+    Recreates forward pass for: Input(10) -> Dense(8, relu) -> Dense(7, relu) -> Dense(1, sigmoid)
+    """
+    # Keys matching internal Keras HDF5 structure
+    w0 = WEIGHTS["vars/0"]  # Dense 1 Kernel (10, 8)
+    b0 = WEIGHTS["vars/1"]  # Dense 1 Bias (8,)
+    w1 = WEIGHTS["vars/2"]  # Dense 2 Kernel (8, 7)
+    b1 = WEIGHTS["vars/3"]  # Dense 2 Bias (7,)
+    w2 = WEIGHTS["vars/4"]  # Dense 3 Kernel (7, 1)
+    b2 = WEIGHTS["vars/5"]  # Dense 3 Bias (1,)
+
+    # Forward Pass Computation
+    layer1 = relu(np.dot(inputs, w0) + b0)
+    layer2 = relu(np.dot(layer1, w1) + b1)
+    output = sigmoid(np.dot(layer2, w2) + b2)
+    
+    return float(output[0][0])
+
+# Modern UI Dashboard Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neural Network Inference Dashboard</title>
+    <title>Customer Churn Predictor</title>
     <style>
-        body { background-color: #0e1117; color: #ffffff; font-family: -apple-system, sans-serif; padding: 2rem; }
-        .container { max-width: 900px; margin: 0 auto; background: #1e222d; padding: 2rem; border-radius: 12px; border: 1px solid #2e364f; }
-        h1 { color: #4CAF50; margin-top: 0; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        body { background-color: #0e1117; color: #ffffff; font-family: sans-serif; padding: 2rem; }
+        .container { max-width: 800px; margin: 0 auto; background: #1e222d; padding: 2rem; border-radius: 12px; border: 1px solid #2e364f; }
+        h1 { color: #4CAF50; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
         .input-group { display: flex; flex-direction: column; }
-        label { font-size: 0.85rem; color: #a0a0a0; margin-bottom: 0.3rem; }
+        label { font-size: 0.8rem; color: #a0a0a0; margin-bottom: 0.3rem; }
         input { background: #0e1117; border: 1px solid #2e364f; color: white; padding: 0.5rem; border-radius: 6px; }
         button { width: 100%; background: #4CAF50; color: white; border: none; padding: 0.8rem; font-size: 1rem; font-weight: bold; border-radius: 6px; cursor: pointer; }
-        button:hover { background: #45a049; }
         .result-box { margin-top: 1.5rem; padding: 1rem; background: #0e1117; border-radius: 8px; display: none; }
         .metric { font-size: 1.5rem; font-weight: bold; color: #4CAF50; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🧠 Neural Network Inference Engine</h1>
-        <p>Enter values for the 10 input feature vectors:</p>
+        <h1>🧠 Customer Churn Neural Predictor</h1>
+        <p>Enter 10 feature values for real-time model inference:</p>
         <form id="predictForm">
             <div class="grid">
                 {% for i in range(1, 11) %}
@@ -58,13 +76,13 @@ HTML_TEMPLATE = """
                 </div>
                 {% endfor %}
             </div>
-            <button type="submit">Run Prediction</button>
+            <button type="submit">Predict Churn Risk</button>
         </form>
         
         <div id="result" class="result-box">
-            <h3>Prediction Results:</h3>
+            <h3>Inference Results:</h3>
             <p>Predicted Probability: <span id="prob" class="metric">--</span></p>
-            <p>Classification Outcome: <span id="class" class="metric">--</span></p>
+            <p>Classification Output: <span id="class" class="metric">--</span></p>
         </div>
     </div>
 
@@ -86,7 +104,7 @@ HTML_TEMPLATE = """
             const data = await response.json();
             document.getElementById('result').style.display = 'block';
             document.getElementById('prob').innerText = (data.probability * 100).toFixed(2) + '%';
-            document.getElementById('class').innerText = data.class === 1 ? 'Positive (1)' : 'Negative (0)';
+            document.getElementById('class').innerText = data.class === 1 ? 'High Risk (1)' : 'Low Risk (0)';
         });
     </script>
 </body>
@@ -103,13 +121,12 @@ def predict():
         data = request.get_json()
         features = np.array([data["features"]], dtype=np.float32)
         
-        # Perform inference
-        prediction = float(model.predict(features, verbose=0)[0][0])
-        predicted_class = 1 if prediction >= 0.5 else 0
+        prob = predict_forward(features)
+        predicted_class = 1 if prob >= 0.5 else 0
         
         return jsonify({
             "status": "success",
-            "probability": prediction,
+            "probability": prob,
             "class": predicted_class
         })
     except Exception as e:
